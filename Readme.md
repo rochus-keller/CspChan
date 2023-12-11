@@ -1,6 +1,6 @@
 This C library implements channels, as introduced by Hoare (Communicating Sequential Processes, 1985) and popularized by the Go programming language.
 
-Unbuffered as well as buffered channels are supported, and also the select statement in its blocking and non-blocking variants, as in the Go programming language. 
+Currently only buffered channels are supported, and also the select statement in its blocking and non-blocking variants, as in the Go programming language. 
 
 The library currently works with Ptreads; support for Win32 threads is work in progress.
 
@@ -90,7 +90,8 @@ In addition, test.c includes some of the examples from Birch Hansen, Per (1987):
 
 ### Planned or work-in-progress features
 
-- [x] Unix version with blocking and non-blocking select
+- [x] Unix version with buffered channels and blocking and non-blocking select
+- [ ] Unix version with unbuffered channels
 - [ ] Windows version
 - [ ] Implement a thread-pool to re-use threads instead of starting a new one with each call to CspChan_fork to improve performance
 
@@ -102,7 +103,7 @@ For C there are also some libraries, partially with similar goals as the present
 
 Pipe (https://github.com/cgaebel/pipe) is a C99 implementation of a thread-safe FIFO. The library is very well documented, but also more complex than the present one, and with more dynamic allocations (CspChan uses a simple fixed size ring buffer instead, like Go). The Pipe library has no select implementation, and adding one seems pretty complicated and requires changes to the library.
 
-The Chan library (https://github.com/tylertreat/chan) is a C implementation of Go channels and shares the same goals as the present library. There is even an implementation of Go select. The implementation is rather complex (assumingly too complex, with separate implementations for buffered and unbuffered channels) and also with more dynamic allocations than strictly necessary; apparently only non-blocking selects are supported (i.e. only Go selects with default); adding blocking selects would require significant changes to the library.
+The Chan library (https://github.com/tylertreat/chan) is a C implementation of Go channels and shares the same goals as the present library. There is even an implementation of Go select. The implementation is rather complex (with separate implementations for buffered and unbuffered channels) and also with more dynamic allocations than I would hope for; apparently only non-blocking selects are supported (i.e. only Go selects with default); adding blocking selects would require significant changes to the library.
 
 
 ## Support
