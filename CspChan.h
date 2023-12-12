@@ -43,15 +43,17 @@ typedef struct CspChan_t CspChan_t;
 /* CspChan_create:
  * Create a channel suited to transport messages of msgLen bytes. The channel blocks on send
  * (if it is full) and receive (if it is empty). As in Go the capacity of the channel can be
- * set using the queueLen parameter. As soon as created a channel can be used for communication
- * until it is closed or disposed. Channels are thread-safe and thus can safely be passed to and
- * used by other threads in parallel. */
+ * set using the queueLen parameter. Set queueLen to 0 for an unbuffered channel (which is
+ * not the same as a channel with queueLen==1 in Go). As soon as created, a channel can be
+ * used for communication until it is closed or disposed. Channels are thread-safe and thus can
+ * safely be passed to and used by other threads in parallel. */
 CSPCHANEXP CspChan_t* CspChan_create(unsigned short queueLen, unsigned short msgLen );
 
 /* CspChan_close:
  * The call to CspChan_close is optional; it is useful to signal to a thread that it should stop
  * running without an extra channel. It is legal though to directly call CspChan_dispose when
- * the channel is no longer used. This procedure also signals all threads waiting on this channel. */
+ * the channel is no longer used. This procedure also signals all threads waiting on this channel.
+ * NOTE that close is not synchronized in this library (in contrast to Go). */
 CSPCHANEXP void CspChan_close(CspChan_t*);
 
 /* CspChan_closed:

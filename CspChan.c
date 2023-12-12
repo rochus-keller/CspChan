@@ -21,6 +21,7 @@
 #include <pthread.h>
 #include <error.h>
 #include <unistd.h>
+#include <assert.h>
 
 /* TODO: Win32 implementation */
 
@@ -35,31 +36,49 @@ typedef struct Signals
 typedef struct CspChan_t
 {
     pthread_mutex_t srMtx, observerMtx;
-    pthread_cond_t received, sent;
-    unsigned short msgLen, queueLen, msgCount, rIdx, wIdx;
-    unsigned char closed;
+    pthread_cond_t condA; /* received | waiting for second thread */
+    pthread_cond_t condB; /* sent | waiting for channel free */
+    unsigned short msgLen;
+    unsigned short closed : 1;
+    unsigned short unbuffered : 1;
+    unsigned short barrierPhase : 2;
+    unsigned short expectingSender : 1;
+    union
+    {
+        struct { unsigned short queueLen, msgCount, rIdx, wIdx; };
+        void* dataPtr;
+    };
+
     Signals observer;
     unsigned char data[]; /* assumes flexible array members C89 extension, or a C99 compiler, or try with data[0] */
 } CspChan_t;
 
 CspChan_t* CspChan_create(unsigned short queueLen, unsigned short msgLen)
 {
-    if( queueLen == 0 )
-        queueLen = 1;
     if( msgLen == 0 )
         msgLen = 1;
+    /* queueLen == 0 is an unbuffered channel, but we still need one slot to transport the message */
     CspChan_t* c = (CspChan_t*)malloc(sizeof(CspChan_t) + queueLen*msgLen);
-    c->queueLen = queueLen;
-    c->msgCount = 0;
     c->msgLen = msgLen;
-    c->rIdx = 0;
-    c->wIdx = 0;
     c->closed = 0;
+    if( queueLen == 0 )
+    {
+        c->unbuffered = 1;
+        c->dataPtr = 0;
+        c->barrierPhase = 0;
+    }else
+    {
+        c->unbuffered = 0;
+        c->queueLen = queueLen;
+        c->msgCount = 0;
+        c->rIdx = 0;
+        c->wIdx = 0;
+    }
     memset(&c->observer,0,sizeof(Signals));
     pthread_mutex_init(&c->srMtx,0);
     pthread_mutex_init(&c->observerMtx,0);
-    pthread_cond_init(&c->received,0);
-    pthread_cond_init(&c->sent,0);
+    pthread_cond_init(&c->condA,0);
+    pthread_cond_init(&c->condB,0);
     return c;
 }
 
@@ -90,10 +109,10 @@ void CspChan_dispose(CspChan_t* c)
         s = s->next;
         free(ss);
     }
-    pthread_cond_broadcast(&c->sent);
-    pthread_cond_broadcast(&c->received);
-    pthread_cond_destroy(&c->sent);
-    pthread_cond_destroy(&c->received);
+    pthread_cond_broadcast(&c->condB);
+    pthread_cond_broadcast(&c->condA);
+    pthread_cond_destroy(&c->condB);
+    pthread_cond_destroy(&c->condA);
     pthread_mutex_destroy(&c->observerMtx);
     pthread_mutex_destroy(&c->srMtx);
     free(c);
@@ -165,27 +184,6 @@ static void send(CspChan_t* c, void* data)
     c->msgCount++;
 }
 
-void CspChan_send(CspChan_t* c, void* dataPtr)
-{
-    pthread_mutex_lock(&c->srMtx);
-
-    while( !c->closed && is_full(c) )
-    {
-        int i = 0;
-        pthread_cond_wait(&c->received,&c->srMtx);
-        i = 1;
-    }
-
-    send(c,dataPtr);
-
-    pthread_mutex_unlock(&c->srMtx);
-
-    /* NOTE: if the receiver disposes of the channel before the following is complete, a segfault might occur;
-       the order is relevant; c->sent must be signalled last, because observers usually don't dispose the channel */
-    signal_all(c);
-    pthread_cond_signal(&c->sent);
-}
-
 static void receive(CspChan_t* c, void* data)
 {
     if( c->closed )
@@ -195,23 +193,94 @@ static void receive(CspChan_t* c, void* data)
     c->msgCount--;
 }
 
+static void synctwo(CspChan_t* c, void* dataPtr, int thisIsSender)
+{
+start:
+    /* we come here with srMtx already locked */
+    if( c->closed )
+    {
+        pthread_mutex_unlock(&c->srMtx);
+        return;
+    }
+    switch( c->barrierPhase )
+    {
+    case 0: /* I'm the first */
+        c->barrierPhase = 1;
+        c->expectingSender = !thisIsSender;
+        c->dataPtr = dataPtr;
+        signal_all(c);
+        while( !c->closed && c->barrierPhase != 2 )
+            pthread_cond_wait(&c->condA,&c->srMtx);
+        c->barrierPhase = 0;
+        pthread_mutex_unlock(&c->srMtx);
+        /* here a third thread can interfere */
+        pthread_cond_signal(&c->condB);
+        break;
+    case 1: /* I'm the second */
+        if( c->expectingSender != thisIsSender )
+        {
+            /* the caller is not the expected one, wait for another and send this one to sleep */
+            pthread_cond_wait(&c->condB,&c->srMtx);
+            goto start;
+        }
+        if( thisIsSender )
+            memcpy(c->dataPtr,dataPtr,c->msgLen);
+        else
+            memcpy(dataPtr,c->dataPtr,c->msgLen);
+        c->barrierPhase = 2;
+        pthread_mutex_unlock(&c->srMtx);
+        /* here a third thread can interfere */
+        pthread_cond_signal(&c->condA);
+        break;
+    case 2: /* channel occupied, wait */
+        pthread_cond_wait(&c->condB,&c->srMtx);
+        goto start;
+        break;
+    }
+}
+
+void CspChan_send(CspChan_t* c, void* dataPtr)
+{
+    pthread_mutex_lock(&c->srMtx);
+
+    if( c->unbuffered )
+    {
+        synctwo(c,dataPtr,1);
+    }else
+    {
+        while( !c->closed && is_full(c) )
+            pthread_cond_wait(&c->condA,&c->srMtx);
+
+        send(c,dataPtr);
+
+        pthread_mutex_unlock(&c->srMtx);
+
+        /* NOTE: if the receiver disposes of the channel before the following is complete, a segfault might occur;
+           the order is relevant; c->sent must be signalled last, because observers usually don't dispose the channel */
+        signal_all(c);
+        pthread_cond_signal(&c->condB);
+    }
+}
+
 void CspChan_receive(CspChan_t* c, void* dataPtr)
 {
     pthread_mutex_lock(&c->srMtx);
 
-    while( !c->closed && is_empty(c) )
+    if( c->unbuffered )
     {
-        int i = 0;
-        pthread_cond_wait(&c->sent,&c->srMtx);
-        i = 1;
+        synctwo(c,dataPtr,0);
+    }else
+    {
+        while( !c->closed && is_empty(c) )
+            pthread_cond_wait(&c->condB,&c->srMtx);
+
+        receive(c,dataPtr);
+
+        pthread_mutex_unlock(&c->srMtx);
+
+        signal_all(c);
+        pthread_cond_signal(&c->condA);
     }
-
-    receive(c,dataPtr);
-
-    pthread_mutex_unlock(&c->srMtx);
-
-    signal_all(c);
-    pthread_cond_signal(&c->received);
 }
 
 static int anyready(CspChan_t** receiver, unsigned int rCount,
@@ -232,10 +301,17 @@ static int anyready(CspChan_t** receiver, unsigned int rCount,
         }else if( pthread_mutex_trylock(&c->srMtx) == 0 )
         {
             int ok = 0;
-            if( i < rCount )
-                ok = !is_empty(c);
-            else
-                ok = !is_full(c);
+            if( c->unbuffered )
+            {
+                ok = c->barrierPhase == 1 &&
+                        ((c->expectingSender && i >= rCount) || (!c->expectingSender && i < rCount) );
+            }else
+            {
+                if( i < rCount )
+                    ok = !is_empty(c);
+                else
+                    ok = !is_full(c);
+            }
 
             if( ok )
             {
@@ -276,18 +352,31 @@ static int doselect(int n, void** rData, unsigned int rCount, void** sData, unsi
             candidate--;
         }
     }
-    if( n < rCount )
+    if( c->unbuffered )
     {
-        receive(c,rData[n]);
+        if( n >= rCount )
+            memcpy(c->dataPtr,sData[n-rCount],c->msgLen);
+        else
+            memcpy(rData[n],c->dataPtr,c->msgLen);
+        c->barrierPhase = 2;
         pthread_mutex_unlock(&c->srMtx);
         signal_all(c);
-        pthread_cond_signal(&c->received);
+        pthread_cond_signal(&c->condA);
     }else
     {
-        send(c,sData[n-rCount]);
-        pthread_mutex_unlock(&c->srMtx);
-        signal_all(c);
-        pthread_cond_signal(&c->sent);
+        if( n < rCount )
+        {
+            receive(c,rData[n]);
+            pthread_mutex_unlock(&c->srMtx);
+            signal_all(c);
+            pthread_cond_signal(&c->condA);
+        }else
+        {
+            send(c,sData[n-rCount]);
+            pthread_mutex_unlock(&c->srMtx);
+            signal_all(c);
+            pthread_cond_signal(&c->condB);
+        }
     }
     return n;
 }
@@ -327,6 +416,7 @@ int CspChan_select(CspChan_t** receiver, void** rData, unsigned int rCount,
             remove_observer(sender[i-rCount], &sig);
     }
 
+    pthread_mutex_unlock(&mtx);
     pthread_cond_destroy(&sig);
     pthread_mutex_destroy(&mtx);
 
@@ -378,10 +468,10 @@ void CspChan_sleep(unsigned int milliseconds)
 
 void CspChan_close(CspChan_t* c)
 {
-    signal_all(c);
-    pthread_cond_broadcast(&c->sent);
-    pthread_cond_broadcast(&c->received);
     c->closed = 1;
+    signal_all(c);
+    pthread_cond_broadcast(&c->condB);
+    pthread_cond_broadcast(&c->condA);
 }
 
 int CspChan_closed(CspChan_t* c)
