@@ -32,9 +32,10 @@ static void* senderB(void* arg) {
     CspChan_t* out = (CspChan_t*)arg;
     int i = -1;
     while(!CspChan_closed(out)) {
+        CspChan_sleep(1000);
         CspChan_send(out,&i);
         i--;
-        CspChan_sleep(3000);
+        CspChan_sleep(1000);
     }
     return 0;
 }
@@ -67,8 +68,8 @@ static void* receiverAB(void* arg) {
 
 int main()
 {
-    CspChan_t* a = CspChan_create(1,4);
-    CspChan_t* b = CspChan_create(1,4);
+    CspChan_t* a = CspChan_create(0,4); /* unbuffered channel */
+    CspChan_t* b = CspChan_create(1,4); /* buffered channel */
     CspChan_fork(senderA,a);
     CspChan_fork(senderB,b);
     receiverAB_arg* arg = (receiverAB_arg*)malloc(sizeof(receiverAB_arg));
@@ -91,7 +92,7 @@ In addition, test.c includes some of the examples from Birch Hansen, Per (1987):
 ### Planned or work-in-progress features
 
 - [x] Unix version with buffered channels and blocking and non-blocking select
-- [ ] Unix version with unbuffered channels (WIP)
+- [x] Unix version with unbuffered channels (WIP)
 - [ ] Windows version
 - [ ] Implement a thread-pool to re-use threads instead of starting a new one with each call to CspChan_fork to improve performance
 
