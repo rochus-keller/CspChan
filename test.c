@@ -20,11 +20,6 @@
 #include <assert.h>
 #include <pthread.h>
 
-typedef struct fibonacci_arg {
-    CspChan_t* f;
-    int x;
-} fibonacci_arg;
-
 static int threadcount = 0;
 static pthread_mutex_t mtx;
 static void inc()
@@ -42,6 +37,11 @@ static void dec()
 
 static const char* err = "";
 
+typedef struct fibonacci_arg {
+    CspChan_t* f;
+    int x;
+} fibonacci_arg;
+
 /* as in Birch Hansen, Per (1987): Joyce - A Programming Language for Distributed Systems */
 static void* fibonacci(void* arg)
 {
@@ -58,8 +58,7 @@ static void* fibonacci(void* arg)
         arg1->x = fa->x - 1;
         int y,z;
         int res = 0;
-        CspChan_ThreadId t1;
-        if( (t1 = CspChan_fork(fibonacci,arg1)) == 0 )
+        if( CspChan_fork(fibonacci,arg1) == 0 )
         {
             /* fprintf(stderr,"fibonacci %d cancelled: tc=%d\n", fa->x, threadcount); */
             CspChan_dispose(g);
@@ -75,12 +74,10 @@ static void* fibonacci(void* arg)
         fibonacci_arg* arg2 = (fibonacci_arg*)malloc(sizeof(fibonacci_arg));
         arg2->f = h;
         arg2->x = fa->x - 2;
-        CspChan_ThreadId t2;
-        if( (t2 = CspChan_fork(fibonacci,arg2)) == 0 )
+        if( CspChan_fork(fibonacci,arg2) == 0 )
         {
             /* fprintf(stderr,"fibonacci %d cancelled: tc=%d\n", fa->x, threadcount); */
             CspChan_receive(g,&y);
-            /* CspChan_join(t1); */
             CspChan_dispose(g);
             CspChan_dispose(h);
             CspChan_send(fa->f,&res);
@@ -92,18 +89,13 @@ static void* fibonacci(void* arg)
         }
 
         CspChan_receive(g,&y);
-        /* if we don't join it's much faster, but it segfaults if the thread after rendevous still accesses g. */
-        /* CspChan_join(t1); */
         CspChan_dispose(g);
         CspChan_receive(h,&z);
-        /* CspChan_join(t2); */
         CspChan_dispose(h);
         res = y + z;
-        /* CspChan_sleep(3000); */
         CspChan_send(fa->f,&res);
     }
     /* printf("fibonacci %d ended\n", fa->x); */
-    /* CspChan_sleep(1000); */
     free(arg);
     dec();
     return 0;
@@ -113,15 +105,13 @@ static void testFibonacci()
 {
     CspChan_t* f = CspChan_create(1,sizeof(int));
     fibonacci_arg* arg = (fibonacci_arg*)malloc(sizeof(fibonacci_arg));
-    const int in = 10; /* 11 works, 12 creates too many threads (more than 262, but significantly differs each run) */
+    const int in = 11; /* 11 works, 12 creates too many threads (more than 262, but significantly differs each run) */
     arg->f = f;
     arg->x = in;
-    CspChan_ThreadId t = CspChan_fork(fibonacci,arg);
+    CspChan_fork(fibonacci,arg);
 
     int out;
     CspChan_receive(f, &out);
-
-    /* CspChan_join(t); */
 
     CspChan_dispose(f);
 
@@ -134,48 +124,56 @@ static void testFibonacci()
 
 typedef struct sieve_arg {
     CspChan_t* in;
-    CspChan_t* eofIn;
+    CspChan_t* inEos;
     CspChan_t* out;
-    CspChan_t* eofOut;
+    CspChan_t* outEos;
+    CspChan_t* eos;
 } sieve_arg;
 
 /* another example from Birch Hansen's paper */
 static void* sieve(void* arg)
 {
+    inc();
     sieve_arg* sa = (sieve_arg*)arg;
 
     int x, y;
     unsigned char eof = 0, more = 0;
-    CspChan_t* succ = CspChan_create(1,4);
-    CspChan_t* eofSucc = CspChan_create(1,1);
+    CspChan_t* succ = 0;
+    CspChan_t* succEos = 0;
+    CspChan_t* outEos = 0;
 
-    CspChan_ThreadId t = 0;
-
-    CspChan_t* receivers[2] = { sa->in, sa->eofIn };
-    void* rData[2] = { &x, &eof };
-    switch( CspChan_select(receivers,rData,2, 0, 0, 0) )
+    CspChan_t* receivers1[2] = { sa->in, sa->inEos };
+    void* rData1[2] = { &x, &eof };
+    int forked = 0;
+    switch( CspChan_select(receivers1, rData1, 2, 0, 0, 0) )
     {
     case 0:
         {
             sieve_arg* sa2 = (sieve_arg*)malloc(sizeof(sieve_arg));
+            succ = CspChan_create(3,4);
+            succEos = CspChan_create(1,1);
+            outEos = CspChan_create(0,1);
             sa2->in = succ;
-            sa2->eofIn = eofSucc;
+            sa2->inEos = succEos;
             sa2->out = sa->out;
-            sa2->eofOut = sa->eofOut;
-            t = CspChan_fork(sieve,sa2);
+            sa2->outEos = sa->outEos;
+            sa2->eos = outEos;
+            CspChan_fork(sieve,sa2);
             more = 1;
+            forked = 1;
         }
         break;
     case 1:
-        CspChan_send(sa->eofOut,&eof);
+        CspChan_send(sa->outEos,&eof);
         more = 0;
         break;
     }
 
     while( more )
     {
-        rData[0] = &y;
-        switch( CspChan_select(receivers,rData,2, 0, 0, 0) )
+        CspChan_t* receivers2[2] = { sa->in, sa->inEos };
+        void* rData2[2] = { &y, &eof };
+        switch( CspChan_select(receivers2, rData2, 2, 0, 0, 0) )
         {
         case 0:
             if( y % x != 0 )
@@ -184,18 +182,23 @@ static void* sieve(void* arg)
         case 1:
             CspChan_send(sa->out,&x);
             eof = 1;
-            CspChan_send(eofSucc,&eof);
+            CspChan_send(succEos,&eof);
             more = 0;
             break;
         }
     }
 
-    if( t )
-        CspChan_join(t);
-
-    CspChan_dispose(eofSucc);
-    CspChan_dispose(succ);
+    if( forked )
+    {
+        CspChan_receive(outEos,&eof);
+        CspChan_dispose(outEos);
+        CspChan_dispose(succEos);
+        CspChan_dispose(succ);
+    }
+    if( sa->eos )
+        CspChan_send(sa->eos,&eof);
     free(sa);
+    dec();
     return 0;
 }
 
@@ -222,7 +225,8 @@ static void* generate(void* arg)
 }
 
 typedef struct print_arg {
-    CspChan_t* out;
+    CspChan_t* in;
+    CspChan_t* inEof;
     CspChan_t* outEof;
 } print_arg;
 
@@ -235,12 +239,12 @@ static void* print(void* arg)
     {
         int x;
         unsigned char eof;
-        CspChan_t* receivers[2] = { pa->out, pa->outEof };
+        CspChan_t* receivers[2] = { pa->in, pa->inEof };
         void* rData[2] = { &x, &eof };
         switch( CspChan_select(receivers,rData,2, 0, 0, 0) )
         {
         case 0:
-            printf("%d\n", x);
+            printf("prime: %d\n", x);
             fflush(stdout);
             break;
         case 1:
@@ -249,16 +253,20 @@ static void* print(void* arg)
         }
     }
 
+    unsigned char eof = 1;
+    CspChan_send(pa->outEof,&eof);
     free(pa);
     return 0;
 }
 
 static void testSieve()
 {
-    CspChan_t* a = CspChan_create(1,4);
+    printf("start sieve\n"); fflush(stdout);
+    CspChan_t* a = CspChan_create(3,4);
     CspChan_t* aa = CspChan_create(1,1);
-    CspChan_t* b = CspChan_create(1,4);
-    CspChan_t* bb = CspChan_create(1,1);
+    CspChan_t* b = CspChan_create(3,4);
+    CspChan_t* bb = CspChan_create(3,1);
+    CspChan_t* end = CspChan_create(0,1);
 
     generate_arg* ga = (generate_arg*)malloc(sizeof(generate_arg));
     ga->out = a;
@@ -266,28 +274,181 @@ static void testSieve()
     ga->a = 3;
     ga->b = 2;
     ga->n = 99; /* works up to 599, but not with original 4999 */
-    CspChan_ThreadId t1 = CspChan_fork(generate,ga);
+    CspChan_fork(generate,ga);
 
     sieve_arg* sa = (sieve_arg*)malloc(sizeof(sieve_arg));
     sa->in = a;
-    sa->eofIn = aa;
+    sa->inEos = aa;
     sa->out = b;
-    sa->eofOut = bb;
-    CspChan_ThreadId t2 = CspChan_fork(sieve,sa);
+    sa->outEos = bb;
+    sa->eos = end;
+    CspChan_fork(sieve,sa);
 
     print_arg* pa = (print_arg*)malloc(sizeof(print_arg));
-    pa->out = b;
-    pa->outEof = bb;
-    CspChan_ThreadId t3 = CspChan_fork(print,pa);
+    pa->in = b;
+    pa->inEof = bb;
+    pa->outEof = end;
+    CspChan_fork(print,pa);
 
-    CspChan_join(t1);
-    CspChan_join(t2);
-    CspChan_join(t3);
+    unsigned char eof;
+    CspChan_receive(end,&eof);
+    CspChan_receive(end,&eof);
 
     CspChan_dispose(aa);
     CspChan_dispose(a);
     CspChan_dispose(bb);
     CspChan_dispose(b);
+    CspChan_dispose(end);
+    printf("end sieve\n"); fflush(stdout);
+}
+
+typedef struct sieve2_arg {
+    CspChan_t* in;
+    CspChan_t* out;
+    CspChan_t* eos;
+} sieve2_arg;
+
+/* another example from Birch Hansen's paper */
+static void* sieve2(void* arg)
+{
+    inc();
+    sieve2_arg* sa = (sieve2_arg*)arg;
+
+    int x, y;
+    int eof = -1, more = 0;
+    CspChan_t* succ = 0;
+    CspChan_t* outEos = 0;
+
+    int forked = 0;
+    CspChan_receive(sa->in,&x);
+    if( x < 0 )
+    {
+        CspChan_send(sa->out,&x);
+        more = 0;
+    }else
+    {
+        sieve2_arg* sa2 = (sieve2_arg*)malloc(sizeof(sieve2_arg));
+        succ = CspChan_create(0,4);
+        outEos = CspChan_create(0,4);
+        sa2->in = succ;
+        sa2->out = sa->out;
+        sa2->eos = outEos;
+        CspChan_fork(sieve2,sa2);
+        more = 1;
+        forked = 1;
+    }
+
+    while( more )
+    {
+        CspChan_receive(sa->in,&y);
+        if( y < 0 )
+        {
+            CspChan_send(sa->out,&x);
+            CspChan_send(succ,&eof);
+            more = 0;
+        }else
+        {
+            if( y % x != 0 )
+                CspChan_send(succ,&y);
+        }
+    }
+
+    if( forked )
+    {
+        CspChan_receive(outEos,&eof);
+        CspChan_dispose(outEos);
+        CspChan_dispose(succ);
+    }
+    if( sa->eos )
+        CspChan_send(sa->eos,&eof);
+    free(sa);
+    dec();
+    return 0;
+}
+
+typedef struct generate2_arg {
+    CspChan_t* out;
+    int a,b,n;
+} generate2_arg;
+
+static void* generate2(void* arg)
+{
+    generate2_arg* ga = (generate2_arg*)arg;
+    int i = 0;
+    while( i < ga->n )
+    {
+        int tmp = ga->a + i * ga->b;
+        CspChan_send(ga->out,&tmp);
+        i++;
+    }
+    int eos = -1;
+    CspChan_send(ga->out, &eos);
+    free(arg);
+    return 0;
+}
+
+typedef struct print2_arg {
+    CspChan_t* in;
+    CspChan_t* outEof;
+} print2_arg;
+
+static void* print2(void* arg)
+{
+    print2_arg* pa = (print2_arg*)arg;
+
+    int run = 1;
+    while( run )
+    {
+        int x;
+        CspChan_receive(pa->in,&x);
+        if( x < 0 )
+            run = 0;
+        else
+        {
+            printf("prime: %d\n", x);
+            fflush(stdout);
+        }
+    }
+
+    int eof = -1;
+    CspChan_send(pa->outEof,&eof);
+    free(pa);
+    return 0;
+}
+
+static void testSieve2()
+{
+    printf("start sieve\n"); fflush(stdout);
+    CspChan_t* a = CspChan_create(0,4);
+    CspChan_t* b = CspChan_create(0,4);
+    CspChan_t* end = CspChan_create(0,4);
+
+    generate2_arg* ga = (generate2_arg*)malloc(sizeof(generate2_arg));
+    ga->out = a;
+    ga->a = 3;
+    ga->b = 2;
+    ga->n = 99; /* works up to 999, but not with original 4999 */
+    CspChan_fork(generate2,ga);
+
+    sieve2_arg* sa = (sieve2_arg*)malloc(sizeof(sieve2_arg));
+    sa->in = a;
+    sa->out = b;
+    sa->eos = end;
+    CspChan_fork(sieve2,sa);
+
+    print2_arg* pa = (print2_arg*)malloc(sizeof(print2_arg));
+    pa->in = b;
+    pa->outEof = end;
+    CspChan_fork(print2,pa);
+
+    int eof;
+    CspChan_receive(pa->outEof,&eof);
+    CspChan_receive(pa->outEof,&eof);
+
+    CspChan_dispose(a);
+    CspChan_dispose(b);
+    CspChan_dispose(end);
+    printf("end sieve\n"); fflush(stdout);
 }
 
 static void* senderA(void* arg)
@@ -309,9 +470,10 @@ static void* senderB(void* arg)
     int i = -1;
     while(!CspChan_closed(out))
     {
+        CspChan_sleep(1000);
         CspChan_send(out,&i);
+        CspChan_sleep(1000);
         i--;
-        CspChan_sleep(2400);
     }
     return 0;
 }
@@ -333,14 +495,12 @@ static void* receiverAB(void* arg)
         {
         case 0:
             printf("a: %d\n",a);
-            fflush(stdout);
             break;
         case 1:
             printf("b: %d\n",b);
-            fflush(stdout);
             break;
         }
-        /* CspChan_receive(ra->a,&tmp); */
+        fflush(stdout);
     }
     free(arg);
     return 0;
@@ -350,20 +510,16 @@ static void testSelect()
 {
     CspChan_t* a = CspChan_create(0,4);
     CspChan_t* b = CspChan_create(0,4);
-    CspChan_ThreadId t1 = CspChan_fork(senderA,a);
-    CspChan_ThreadId t3 = CspChan_fork(senderB,b);
+    CspChan_fork(senderA,a);
+    CspChan_fork(senderB,b);
     receiverAB_arg* arg = (receiverAB_arg*)malloc(sizeof(receiverAB_arg));
     arg->a = a;
     arg->b = b;
-    CspChan_ThreadId t2 = CspChan_fork(receiverAB,arg);
+    CspChan_fork(receiverAB,arg);
 
     CspChan_sleep(9000);
     CspChan_close(a);
     CspChan_close(b);
-
-    CspChan_join(t1);
-    CspChan_join(t3);
-    CspChan_join(t2);
 
     CspChan_dispose(a);
     CspChan_dispose(b);
@@ -394,16 +550,25 @@ int main(int argc, char *argv[])
     srand(time(NULL));
 
 #if 1
-    /*testFibonacci();
-    testSieve();*/
+#if 1
+    printf("tc=%d\n", threadcount);fflush(stdout);
+    testFibonacci();
+#endif
+#if 1
+    /* testSieve sometimes deadlocks, probably because there are two channels for data and eof;
+     * in the Joyce original there is only one channel with two message types. */
+    printf("tc=%d\n", threadcount);fflush(stdout);
+    testSieve2();
+    printf("tc=%d\n", threadcount);fflush(stdout);
+#endif
+#if 1
     testSelect();
+#endif
 #else
     CspChan_t* a = CspChan_create(0,4);
-    CspChan_ThreadId t1 = CspChan_fork(tx,a);
-    CspChan_ThreadId t2 = CspChan_fork(rx,a);
+    CspChan_fork(tx,a);
+    CspChan_fork(rx,a);
 
-    CspChan_join(t1);
-    CspChan_join(t2);
     CspChan_dispose(a);
 #endif
 

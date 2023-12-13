@@ -19,7 +19,7 @@
 
 /* CspChan:
  * This is a C89 library which implements CSP channels in a similar way as e.g. in the Go programmin language.
- * The library uses pthreads (on Unix) or Win32 threads (on Windows, TBD). Thus the practical number
+ * The library uses pthreads (on Unix) or Win32 threads (on Windows). Thus the practical number
  * of available threads is much lower than in languages like Go, Joyce or SuperPascal. But the semantics
  * of the channels otherwise corresponds pretty well to the mentioned languages, including the either
  * blocking or non-blocking select. A future version of the library might support thread pools or even
@@ -42,18 +42,18 @@ typedef struct CspChan_t CspChan_t;
 
 /* CspChan_create:
  * Create a channel suited to transport messages of msgLen bytes. The channel blocks on send
- * (if it is full) and receive (if it is empty). As in Go the capacity of the channel can be
- * set using the queueLen parameter. Set queueLen to 0 for an unbuffered channel (which is
- * not the same as a channel with queueLen==1 in Go). As soon as created, a channel can be
- * used for communication until it is closed or disposed. Channels are thread-safe and thus can
- * safely be passed to and used by other threads in parallel. */
+ * (if buffer is full) and receive (if buffer is empty). As in Go the capacity of the channel can
+ * be set using the queueLen parameter. Set queueLen to 0 for an unbuffered channel (which is
+ * not the same as a channel with queueLen 1). An unbuffered channel blocks until a rendezvous
+ * with the other thread has occurred (i.e. a reader with a writer thread or vize versa).
+ * As soon as created, a channel can be used for communication until it is closed or disposed.
+ * Channels are thread-safe and thus can safely be passed to and used by other threads in parallel. */
 CSPCHANEXP CspChan_t* CspChan_create(unsigned short queueLen, unsigned short msgLen );
 
 /* CspChan_close:
  * The call to CspChan_close is optional; it is useful to signal to a thread that it should stop
  * running without an extra channel. It is legal though to directly call CspChan_dispose when
- * the channel is no longer used. This procedure also signals all threads waiting on this channel.
- * NOTE that close is not synchronized in this library (in contrast to Go). */
+ * the channel is no longer used. This procedure also signals all threads waiting on this channel. */
 CSPCHANEXP void CspChan_close(CspChan_t*);
 
 /* CspChan_closed:
@@ -67,16 +67,16 @@ CSPCHANEXP int CspChan_closed(CspChan_t*);
 CSPCHANEXP void CspChan_dispose(CspChan_t*);
 
 /* CspChan_send:
- * Send a message of msgLen bytes (see CspChan_create) over the channel. If the channel is full (see
- * queueLen of CspChan_create) the calling thread blocks, thus waiting for a rendezvous with a thread
- * calling CspChan_receive on the same channel. If the channel was closed the call immediately returns
+ * Send a message of msgLen bytes (see CspChan_create) over the channel. If the channel is full or
+ * unbuffered (see CspChan_create), the calling thread blocks, thus waiting for a rendezvous with a thread
+ * calling CspChan_receive on the same channel. If the channel was closed, the call immediately returns
  * with no effect. The parameter dataPtr is the address of the variable the data of which are sent. */
 CSPCHANEXP void CspChan_send(CspChan_t*, void* dataPtr);
 
 /* CspChan_receive:
- * Receive a message of msgLen bytes (see CspChan_create) from the channel. If the channel is empty (see
- * queueLen of CspChan_create) the calling thread blocks, thus waiting for a rendezvous with a thread
- * calling CspChan_send on the same channel. If the channel was closed the call immediately returns
+ * Receive a message of msgLen bytes (see CspChan_create) from the channel. If the channel is empty or
+ * unbuffered (see CspChan_create), the calling thread blocks, thus waiting for a rendezvous with a thread
+ * calling CspChan_send on the same channel. If the channel was closed, the call immediately returns
  * with no effect. The parameter dataPtr is the address of the variable which receives the data. */
 CSPCHANEXP void CspChan_receive(CspChan_t*, void* dataPtr);
 
@@ -111,19 +111,11 @@ CSPCHANEXP int CspChan_nb_select(CspChan_t** receiver, void** rData, unsigned in
 
 /* Helper API for applications which don't want to directly deal with a thread API. */
 
-typedef unsigned long CspChan_ThreadId;
-
 /* CspChan_fork:
  * Create a new thread (or possibly re-use one from the pool) and use it to run the agent function.
  * If the thread could not be started (possibly because no more threads are available) the function
- * returns 0, otherwise it returns a valid ThreadId. */
-CSPCHANEXP CspChan_ThreadId CspChan_fork(void* (*agent)(void*), void * arg);
-
-/* CspChan_join:
- * This procedure is optional and not actually necessary for a CSP implementation, because the same effect
- * can be achieved with a channel. It requires the CspChan_ThreadId returned by CspChan_fork which could
- * be ignored otherwise. */
-CSPCHANEXP void CspChan_join(CspChan_ThreadId);
+ * returns 0, otherwise it returns 1. */
+CSPCHANEXP int CspChan_fork(void* (*agent)(void*), void * arg);
 
 /* CspChan_sleep:
  * Suspends the calling thread for the given number of milliseconds. */
