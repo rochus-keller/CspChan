@@ -1,6 +1,6 @@
 This C library implements channels, as introduced by Hoare (Communicating Sequential Processes, 1985) and popularized by the Go programming language.
 
-Buffered and unbuffered channels are supported (unbuffered are WIP), and also the select statement in its blocking and non-blocking variants, as in the Go programming language. 
+Buffered and unbuffered channels are supported, and also the select statement in its blocking and non-blocking variants, as in the Go programming language. 
 
 The library currently works with Ptreads; support for Win32 threads is work in progress.
 

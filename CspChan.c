@@ -60,7 +60,7 @@ CspChan_t* CspChan_create(unsigned short queueLen, unsigned short msgLen)
 {
     if( msgLen == 0 )
         msgLen = 1;
-    /* queueLen == 0 is an unbuffered channel, but we still need one slot to transport the message */
+    /* queueLen == 0 is an unbuffered channel */
     CspChan_t* c = (CspChan_t*)malloc(sizeof(CspChan_t) + queueLen*msgLen);
     c->msgLen = msgLen;
     c->closed = 0;
