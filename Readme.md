@@ -92,7 +92,7 @@ In addition, test.c includes some of the examples from Birch Hansen, Per (1987):
 ### Planned or work-in-progress features
 
 - [x] Unix version with buffered channels and blocking and non-blocking select
-- [x] Unix version with unbuffered channels (WIP)
+- [x] Unix version with unbuffered channels
 - [ ] Windows version
 - [ ] Implement a thread-pool to re-use threads instead of starting a new one with each call to CspChan_fork to improve performance
 
