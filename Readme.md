@@ -2,7 +2,7 @@ This C library implements channels, as introduced by Hoare (Communicating Sequen
 
 Buffered and unbuffered channels are supported, and also the select statement in its blocking and non-blocking variants, as in the Go programming language. 
 
-The library currently works with Ptreads; support for Win32 threads is work in progress.
+The library currently works with Pthreads; support for Win32 threads is work in progress.
 
 ### How to use
 

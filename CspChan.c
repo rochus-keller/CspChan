@@ -150,6 +150,7 @@ static void add_observer(CspChan_t* c, pthread_cond_t* sig)
         s = s->next;
     }
     s = (Signals*)malloc(sizeof(Signals));
+    memset(s,0,sizeof(Signals));
     s->sig[0] = sig;
     s->next = c->observer.next;
     c->observer.next = s;
